@@ -1,0 +1,95 @@
+#!/usr/bin/env python
+
+from timeout import timeout
+
+import pandas
+import json
+import subprocess
+import sys
+import signal
+import os
+import time
+import timeit
+
+stop = False
+def handler(signum, frame):
+    global stop
+
+    stop = True
+
+def main():
+    global stop
+
+    # check input
+    if( len(sys.argv) != 3 ):
+        sys.stderr.write( "usage: " + sys.argv[0] + " CAMERAS.csv OUTPUT.dir\n" )
+        return
+
+    # check if last arg exists and is a dir
+    if( not os.path.exists(sys.argv[2]) ):
+        sys.stderr.write( sys.argv[2] + " does not exist\n"  )
+        return
+    
+    if( not os.path.isdir(sys.argv[2]) ):
+        sys.stderr.write( sys.argv[2] + " is not a directory\n"  )
+        return
+    
+    # open input file
+    csv = pandas.read_csv( sys.argv[1] )
+
+    # output metadata.json
+    cameras = []
+    with open( os.path.join(sys.argv[2], 'metadata.json'), 'w' ) as f:
+        for i in xrange(len(csv)):
+            row = csv.ix[i]
+            cameras.append({
+                'dirname' : i,
+                'state' : row['state'].lstrip().strip(),
+                'city' : row['city'].lstrip().strip(),
+                'address' : row['address'].lstrip().strip(),
+            })
+
+        f.write( json.dumps(cameras, indent=4) )
+        
+    # start all the ffmpeg processes
+    processes = []
+    for camera in cameras:
+        dirname = os.path.join( sys.argv[2], str(camera['dirname']).zfill(3) )
+        os.mkdir( dirname )
+
+        out = open(os.path.join(dirname, 'stream.log'), 'w')
+        processes.append(subprocess.Popen(['ffmpeg',
+                                           '-i', camera['address']+'/mjpg/video.mjpg',
+                                           '-movflags',
+                                           '+faststart',
+                                           '-codec', 'copy',
+                                           '-q:v', '2',
+                                           os.path.join(dirname, 'stream.mjpg')],
+                                          stderr=out,
+                                          stdout=out
+        ))
+        
+    start_time = timeit.default_timer()
+    while( not stop ):
+        time.sleep(5)
+        now = timeit.default_timer()
+        print( 'record time (hours): ' + str(round((now - start_time) / 3600, 3)) )
+               
+    @timeout(10)
+    def end_process(p):
+        p.send_signal(signal.SIGINT)
+        p.wait()
+        
+    # nicely end all the ffmpeg processes
+    for process in processes:
+        try:
+            end_process(process)
+        except:
+            sys.stderr.write( "killing process\n" )
+            process.kill()
+    
+    print( "Done!" )
+        
+if( __name__ == "__main__" ):
+    signal.signal(signal.SIGINT, handler)
+    main()
